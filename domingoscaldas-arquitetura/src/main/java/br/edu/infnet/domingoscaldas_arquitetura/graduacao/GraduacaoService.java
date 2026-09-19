@@ -142,8 +142,8 @@ public class GraduacaoService {
 				: presencaRepository.countByAlunoIdAndDataAfter(alunoId, ultimaGraduacao);
 
 		long pontosConquistas = conquistaService.obterPorAluno(alunoId).stream()
-				.filter(conquista -> conquista.getCampeonato() != null
-						&& (ultimaGraduacao == null || conquista.getCampeonato().getData().isAfter(ultimaGraduacao)))
+				.filter(conquista -> conquista.getCampeonatoData() != null
+						&& (ultimaGraduacao == null || conquista.getCampeonatoData().isAfter(ultimaGraduacao)))
 				.mapToLong(conquista -> conquista.getMedalha().getPontosGraduacao())
 				.sum();
 

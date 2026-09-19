@@ -1,4 +1,4 @@
-package br.edu.infnet.domingoscaldas_arquitetura.exception;
+package br.edu.infnet.campeonato_service.exception;
 
 import java.time.LocalDateTime;
 import java.util.stream.Collectors;
@@ -9,11 +9,11 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
-import br.edu.infnet.domingoscaldas_arquitetura.campeonato.exception.CampeonatoServiceIndisponivelException;
+import br.edu.infnet.campeonato_service.endereco.exception.ViaCepIndisponivelException;
 
 /**
- * Tratamento centralizado das exceções (transversal aos módulos): as exceções
- * de domínio moram em cada módulo; a tradução para HTTP fica concentrada aqui.
+ * Tratamento centralizado das exceções do serviço: as exceções de domínio
+ * moram em cada módulo; a tradução para HTTP fica concentrada aqui.
  */
 @RestControllerAdvice
 public class GlobalExceptionHandler {
@@ -23,6 +23,7 @@ public class GlobalExceptionHandler {
 
 		String mensagem = exception.getBindingResult().getFieldErrors().stream()
 				.map(erro -> erro.getField() + ": " + erro.getDefaultMessage())
+				.sorted()
 				.collect(Collectors.joining("; "));
 
 		return criarResposta(HttpStatus.BAD_REQUEST, mensagem);
@@ -43,10 +44,8 @@ public class GlobalExceptionHandler {
 		return criarResposta(HttpStatus.BAD_REQUEST, exception.getMessage());
 	}
 
-	/** campeonato-service fora do ar ou lento: só as operações que dependem dele respondem 503. */
-	@ExceptionHandler(CampeonatoServiceIndisponivelException.class)
-	public ResponseEntity<ErroResponse> tratarCampeonatoServiceIndisponivel(
-			CampeonatoServiceIndisponivelException exception) {
+	@ExceptionHandler(ViaCepIndisponivelException.class)
+	public ResponseEntity<ErroResponse> tratarViaCepIndisponivel(ViaCepIndisponivelException exception) {
 		return criarResposta(HttpStatus.SERVICE_UNAVAILABLE, exception.getMessage());
 	}
 

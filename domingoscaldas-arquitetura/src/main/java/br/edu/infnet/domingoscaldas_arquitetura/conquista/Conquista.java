@@ -1,7 +1,9 @@
 package br.edu.infnet.domingoscaldas_arquitetura.conquista;
 
+import java.time.LocalDate;
+
 import br.edu.infnet.domingoscaldas_arquitetura.aluno.Aluno;
-import br.edu.infnet.domingoscaldas_arquitetura.campeonato.Campeonato;
+import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
@@ -17,6 +19,11 @@ import jakarta.validation.constraints.Size;
 
 /**
  * Conquista (título) de um aluno em um campeonato: medalha e categoria.
+ *
+ * Desde a Etapa 2 o campeonato pertence ao campeonato-service: aqui fica só
+ * o identificador externo ({@code campeonatoId}, sem FK) e uma cópia do nome e
+ * da data do evento, feita no momento do registro. A data é usada pela regra
+ * de pontos da graduação, que assim não depende do serviço estar no ar.
  */
 @Entity
 @Table(name = "conquistas")
@@ -34,9 +41,14 @@ public class Conquista {
 	@Enumerated(EnumType.STRING)
 	private Medalha medalha;
 
-	@ManyToOne
-	@JoinColumn(name = "campeonato_id")
-	private Campeonato campeonato;
+	@Column(name = "campeonato_id")
+	private Long campeonatoId;
+
+	@Column(name = "campeonato_nome", length = 120)
+	private String campeonatoNome;
+
+	@Column(name = "campeonato_data")
+	private LocalDate campeonatoData;
 
 	@ManyToOne
 	@JoinColumn(name = "aluno_id")
@@ -48,6 +60,13 @@ public class Conquista {
 	public Conquista(String categoria, Medalha medalha) {
 		this.categoria = categoria;
 		this.medalha = medalha;
+	}
+
+	/** Associa a conquista a um campeonato do campeonato-service. */
+	public void definirCampeonato(Long campeonatoId, String campeonatoNome, LocalDate campeonatoData) {
+		this.campeonatoId = campeonatoId;
+		this.campeonatoNome = campeonatoNome;
+		this.campeonatoData = campeonatoData;
 	}
 
 	public Long getId() {
@@ -74,12 +93,16 @@ public class Conquista {
 		this.medalha = medalha;
 	}
 
-	public Campeonato getCampeonato() {
-		return campeonato;
+	public Long getCampeonatoId() {
+		return campeonatoId;
 	}
 
-	public void setCampeonato(Campeonato campeonato) {
-		this.campeonato = campeonato;
+	public String getCampeonatoNome() {
+		return campeonatoNome;
+	}
+
+	public LocalDate getCampeonatoData() {
+		return campeonatoData;
 	}
 
 	public Aluno getAluno() {

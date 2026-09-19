@@ -1,0 +1,266 @@
+{
+	"info": {
+		"name": "BJJ School - Etapa 2 (campeonato-service + OpenFeign)",
+		"description": "Roteiro de testes da Etapa 2 do projeto domingoscaldas-arquitetura (Infnet - Arquiteturas Avancadas com Microsservicos e Spring).\n\nVariaveis: `principal` = aplicacao principal (:8080), `campeonato` = campeonato-service (:8083).\n\nPastas:\n- A: campeonato-service isolado (funciona sem a aplicacao principal).\n- B: atraves da aplicacao principal, com as duas no ar. Acompanhe o console da principal: cada chamada Feign aparece como `---> GET http://localhost:8083/campeonatos/1` / `<--- HTTP/1.1 200`.\n- C: campeonato-service DESLIGADO. So o que depende dele responde 503; o resto continua.\n\nEstado: H2 em memoria. Reinicie as aplicacoes para voltar aos dados de demonstracao.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"variable": [
+		{ "key": "principal", "value": "http://localhost:8080" },
+		{ "key": "campeonato", "value": "http://localhost:8083" }
+	],
+	"item": [
+		{
+			"name": "A - campeonato-service isolado (:8083)",
+			"item": [
+				{
+					"name": "A1 - OpenAPI do servico (Swagger UI: {{campeonato}}/swagger-ui.html)",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('200', () => pm.response.to.have.status(200));",
+						"const doc = pm.response.json();",
+						"pm.test('GET /campeonatos/{id} documenta 200 e 404', () => pm.expect(Object.keys(doc.paths['/campeonatos/{id}'].get.responses).sort()).to.eql(['200','404']));",
+						"pm.test('schemas dos DTOs e do ErroResponse', () => pm.expect(Object.keys(doc.components.schemas)).to.include.members(['CampeonatoRequest','CampeonatoResponse','ErroResponse']));"
+					] } }],
+					"request": { "method": "GET", "header": [], "url": { "raw": "{{campeonato}}/v3/api-docs", "host": ["{{campeonato}}"], "path": ["v3", "api-docs"] } },
+					"response": []
+				},
+				{
+					"name": "A2 - Lista os campeonatos (2 do seed)",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('200', () => pm.response.to.have.status(200));",
+						"pm.test('pelo menos os 2 do seed', () => pm.expect(pm.response.json().length).to.be.at.least(2));"
+					] } }],
+					"request": { "method": "GET", "header": [], "url": { "raw": "{{campeonato}}/campeonatos", "host": ["{{campeonato}}"], "path": ["campeonatos"] } },
+					"response": []
+				},
+				{
+					"name": "A3 - Campeonato 1 (Copa Rio) - operacao consumida pela principal",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('200', () => pm.response.to.have.status(200));",
+						"pm.test('Copa Rio', () => pm.expect(pm.response.json()).to.include({id: 1, nome: 'Copa Rio de Jiu-Jitsu', cidade: 'Rio de Janeiro', data: '2026-05-17'}));"
+					] } }],
+					"request": { "method": "GET", "header": [], "url": { "raw": "{{campeonato}}/campeonatos/1", "host": ["{{campeonato}}"], "path": ["campeonatos", "1"] } },
+					"response": []
+				},
+				{
+					"name": "A4 - Campeonato inexistente: 404 ErroResponse",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('404', () => pm.response.to.have.status(404));",
+						"pm.test('ErroResponse', () => pm.expect(pm.response.json()).to.include({status: 404, erro: 'Not Found', mensagem: 'Campeonato não encontrado: 999'}));"
+					] } }],
+					"request": { "method": "GET", "header": [], "url": { "raw": "{{campeonato}}/campeonatos/999", "host": ["{{campeonato}}"], "path": ["campeonatos", "999"] } },
+					"response": []
+				},
+				{
+					"name": "A5 - Cadastro sem nome e sem data: 400",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('400', () => pm.response.to.have.status(400));",
+						"pm.test('mensagens de validacao', () => pm.expect(pm.response.json().mensagem).to.eql('data: A data é obrigatória; nome: O nome é obrigatório'));"
+					] } }],
+					"request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }],
+						"body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } },
+						"url": { "raw": "{{campeonato}}/campeonatos", "host": ["{{campeonato}}"], "path": ["campeonatos"] } },
+					"response": []
+				},
+				{
+					"name": "A6 - Cadastro com CEP: 201 e cidade preenchida pelo ViaCEP (precisa de internet)",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('201', () => pm.response.to.have.status(201));",
+						"pm.test('cidade veio do CEP', () => pm.expect(pm.response.json().cidade).to.eql('Rio de Janeiro - RJ'));",
+						"pm.collectionVariables.set('campeonatoNovoId', pm.response.json().id);"
+					] } }],
+					"request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }],
+						"body": { "mode": "raw", "raw": "{ \"nome\": \"Rio Open\", \"cep\": \"20271130\", \"data\": \"2026-11-07\" }", "options": { "raw": { "language": "json" } } },
+						"url": { "raw": "{{campeonato}}/campeonatos", "host": ["{{campeonato}}"], "path": ["campeonatos"] } },
+					"response": []
+				},
+				{
+					"name": "A7 - Altera o campeonato criado: 200",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('200', () => pm.response.to.have.status(200));",
+						"pm.test('nome alterado', () => pm.expect(pm.response.json().nome).to.eql('Rio Open de Jiu-Jitsu'));"
+					] } }],
+					"request": { "method": "PUT", "header": [{ "key": "Content-Type", "value": "application/json" }],
+						"body": { "mode": "raw", "raw": "{ \"nome\": \"Rio Open de Jiu-Jitsu\", \"cidade\": \"Rio de Janeiro\", \"data\": \"2026-11-08\" }", "options": { "raw": { "language": "json" } } },
+						"url": { "raw": "{{campeonato}}/campeonatos/{{campeonatoNovoId}}", "host": ["{{campeonato}}"], "path": ["campeonatos", "{{campeonatoNovoId}}"] } },
+					"response": []
+				},
+				{
+					"name": "A8 - Exclui o campeonato criado: 204",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('204', () => pm.response.to.have.status(204));"
+					] } }],
+					"request": { "method": "DELETE", "header": [], "url": { "raw": "{{campeonato}}/campeonatos/{{campeonatoNovoId}}", "host": ["{{campeonato}}"], "path": ["campeonatos", "{{campeonatoNovoId}}"] } },
+					"response": []
+				},
+				{
+					"name": "A9 - Consulta de CEP: 200 (precisa de internet)",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('200', () => pm.response.to.have.status(200));",
+						"pm.test('Sao Paulo - SP', () => pm.expect(pm.response.json()).to.include({localidade: 'São Paulo', uf: 'SP'}));"
+					] } }],
+					"request": { "method": "GET", "header": [], "url": { "raw": "{{campeonato}}/enderecos/01001000", "host": ["{{campeonato}}"], "path": ["enderecos", "01001000"] } },
+					"response": []
+				},
+				{
+					"name": "A10 - CEP inexistente: 404",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('404', () => pm.response.to.have.status(404));"
+					] } }],
+					"request": { "method": "GET", "header": [], "url": { "raw": "{{campeonato}}/enderecos/99999999", "host": ["{{campeonato}}"], "path": ["enderecos", "99999999"] } },
+					"response": []
+				},
+				{
+					"name": "A11 - CEP mal formado: 400",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('400', () => pm.response.to.have.status(400));"
+					] } }],
+					"request": { "method": "GET", "header": [], "url": { "raw": "{{campeonato}}/enderecos/123", "host": ["{{campeonato}}"], "path": ["enderecos", "123"] } },
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "B - Atraves da aplicacao principal (:8080 -> :8083 via OpenFeign)",
+			"item": [
+				{
+					"name": "B1 - Registra conquista da Beatriz no campeonato 2: 201 (campeonato validado no servico)",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('201', () => pm.response.to.have.status(201));",
+						"pm.test('nome e data do campeonato copiados na conquista', () => pm.expect(pm.response.json()).to.include({campeonatoId: 2, campeonatoNome: 'Campeonato Brasileiro de Jiu-Jitsu', campeonatoData: '2026-10-24'}));"
+					] } }],
+					"request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }],
+						"body": { "mode": "raw", "raw": "{ \"categoria\": \"Adulto Azul Leve\", \"medalha\": \"OURO\" }", "options": { "raw": { "language": "json" } } },
+						"url": { "raw": "{{principal}}/conquistas/alunos/2/campeonatos/2", "host": ["{{principal}}"], "path": ["conquistas", "alunos", "2", "campeonatos", "2"] } },
+					"response": []
+				},
+				{
+					"name": "B2 - Campeonato inexistente: 404 REMOTO (traduzido pelo gateway)",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('404', () => pm.response.to.have.status(404));",
+						"pm.test('mensagem remota', () => pm.expect(pm.response.json().mensagem).to.eql('O campeonato de ID 999 não foi encontrado no campeonato-service.'));"
+					] } }],
+					"request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }],
+						"body": { "mode": "raw", "raw": "{ \"categoria\": \"Adulto\", \"medalha\": \"OURO\" }", "options": { "raw": { "language": "json" } } },
+						"url": { "raw": "{{principal}}/conquistas/alunos/2/campeonatos/999", "host": ["{{principal}}"], "path": ["conquistas", "alunos", "2", "campeonatos", "999"] } },
+					"response": []
+				},
+				{
+					"name": "B3 - Aluno inexistente: 404 LOCAL (nenhuma linha de Feign no console)",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('404', () => pm.response.to.have.status(404));",
+						"pm.test('mensagem local, diferente do B2', () => pm.expect(pm.response.json().mensagem).to.eql('Aluno não encontrado: 999'));"
+					] } }],
+					"request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }],
+						"body": { "mode": "raw", "raw": "{ \"categoria\": \"Adulto\", \"medalha\": \"OURO\" }", "options": { "raw": { "language": "json" } } },
+						"url": { "raw": "{{principal}}/conquistas/alunos/999/campeonatos/1", "host": ["{{principal}}"], "path": ["conquistas", "alunos", "999", "campeonatos", "1"] } },
+					"response": []
+				},
+				{
+					"name": "B4 - Detalhes da conquista 1 (dados atuais do campeonato vindos do servico)",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('200', () => pm.response.to.have.status(200));",
+						"pm.test('composicao local + remoto', () => pm.expect(pm.response.json()).to.include({alunoNome: 'Anderson Souza', campeonatoNome: 'Copa Rio de Jiu-Jitsu', campeonatoCidade: 'Rio de Janeiro', campeonatoData: '2026-05-17'}));"
+					] } }],
+					"request": { "method": "GET", "header": [], "url": { "raw": "{{principal}}/conquistas/1/detalhes", "host": ["{{principal}}"], "path": ["conquistas", "1", "detalhes"] } },
+					"response": []
+				},
+				{
+					"name": "B5 - Pontos do Anderson: 68 (regra continua na principal)",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('200', () => pm.response.to.have.status(200));",
+						"pm.test('68 pontos', () => pm.expect(pm.response.text()).to.eql('68'));"
+					] } }],
+					"request": { "method": "GET", "header": [], "url": { "raw": "{{principal}}/graduacoes/alunos/1/pontos", "host": ["{{principal}}"], "path": ["graduacoes", "alunos", "1", "pontos"] } },
+					"response": []
+				},
+				{
+					"name": "B6 - Pontos da Beatriz: 15 (5 presencas + OURO do B1, posterior a graduacao)",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('200', () => pm.response.to.have.status(200));",
+						"pm.test('15 pontos (5 se o B1 nao foi executado)', () => pm.expect(pm.response.text()).to.be.oneOf(['15','5']));"
+					] } }],
+					"request": { "method": "GET", "header": [], "url": { "raw": "{{principal}}/graduacoes/alunos/2/pontos", "host": ["{{principal}}"], "path": ["graduacoes", "alunos", "2", "pontos"] } },
+					"response": []
+				},
+				{
+					"name": "B7 - Rotas de campeonato sairam da principal: 404",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('404 - o cadastro agora so existe no campeonato-service', () => pm.response.to.have.status(404));"
+					] } }],
+					"request": { "method": "GET", "header": [], "url": { "raw": "{{principal}}/campeonatos", "host": ["{{principal}}"], "path": ["campeonatos"] } },
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "C - campeonato-service DESLIGADO (pare o servico antes)",
+			"item": [
+				{
+					"name": "C1 - Registrar conquista: 503 ErroResponse sem detalhes tecnicos (WARN no console)",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('503', () => pm.response.to.have.status(503));",
+						"const e = pm.response.json();",
+						"pm.test('ErroResponse padrao', () => pm.expect(e).to.include({status: 503, erro: 'Service Unavailable', mensagem: 'O serviço de campeonatos está temporariamente indisponível. Tente novamente em instantes.'}));",
+						"pm.test('sem URL, porta ou stack', () => pm.expect(JSON.stringify(e)).to.not.match(/localhost|8083|Connection|Exception/));"
+					] } }],
+					"request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }],
+						"body": { "mode": "raw", "raw": "{ \"categoria\": \"Adulto Azul Medio\", \"medalha\": \"PRATA\" }", "options": { "raw": { "language": "json" } } },
+						"url": { "raw": "{{principal}}/conquistas/alunos/1/campeonatos/1", "host": ["{{principal}}"], "path": ["conquistas", "alunos", "1", "campeonatos", "1"] } },
+					"response": []
+				},
+				{
+					"name": "C2 - Detalhes da conquista: 503",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('503', () => pm.response.to.have.status(503));"
+					] } }],
+					"request": { "method": "GET", "header": [], "url": { "raw": "{{principal}}/conquistas/1/detalhes", "host": ["{{principal}}"], "path": ["conquistas", "1", "detalhes"] } },
+					"response": []
+				},
+				{
+					"name": "C3 - Lista de conquistas continua: 200 (dados locais, com nome e data copiados)",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('200', () => pm.response.to.have.status(200));",
+						"pm.test('nome do campeonato disponivel sem o servico', () => pm.expect(pm.response.json()[0].campeonatoNome).to.eql('Copa Rio de Jiu-Jitsu'));"
+					] } }],
+					"request": { "method": "GET", "header": [], "url": { "raw": "{{principal}}/conquistas", "host": ["{{principal}}"], "path": ["conquistas"] } },
+					"response": []
+				},
+				{
+					"name": "C4 - Pontos do Anderson continuam 68 (a regra usa a data copiada na conquista)",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('200', () => pm.response.to.have.status(200));",
+						"pm.test('68 pontos', () => pm.expect(pm.response.text()).to.eql('68'));"
+					] } }],
+					"request": { "method": "GET", "header": [], "url": { "raw": "{{principal}}/graduacoes/alunos/1/pontos", "host": ["{{principal}}"], "path": ["graduacoes", "alunos", "1", "pontos"] } },
+					"response": []
+				},
+				{
+					"name": "C5 - Alunos e turmas continuam: 200",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('200', () => pm.response.to.have.status(200));"
+					] } }],
+					"request": { "method": "GET", "header": [], "url": { "raw": "{{principal}}/turmas/1/detalhes", "host": ["{{principal}}"], "path": ["turmas", "1", "detalhes"] } },
+					"response": []
+				},
+				{
+					"name": "C6 - Aluno inexistente com servico fora: 404 (validacao local vem antes)",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('404', () => pm.response.to.have.status(404));"
+					] } }],
+					"request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }],
+						"body": { "mode": "raw", "raw": "{ \"categoria\": \"Adulto\", \"medalha\": \"OURO\" }", "options": { "raw": { "language": "json" } } },
+						"url": { "raw": "{{principal}}/conquistas/alunos/999/campeonatos/1", "host": ["{{principal}}"], "path": ["conquistas", "alunos", "999", "campeonatos", "1"] } },
+					"response": []
+				},
+				{
+					"name": "C7 - RELIGUE o servico e repita: 200 sem reiniciar a principal",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('200 - recuperacao sem reinicio', () => pm.response.to.have.status(200));"
+					] } }],
+					"request": { "method": "GET", "header": [], "url": { "raw": "{{principal}}/conquistas/1/detalhes", "host": ["{{principal}}"], "path": ["conquistas", "1", "detalhes"] } },
+					"response": []
+				}
+			]
+		}
+	]
+}

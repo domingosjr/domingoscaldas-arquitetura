@@ -15,6 +15,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import br.edu.infnet.domingoscaldas_arquitetura.conquista.dto.ConquistaDetalheResponse;
 import jakarta.validation.Valid;
 
 /**
@@ -48,6 +49,12 @@ public class ConquistaController {
 	@GetMapping("/quadro-medalhas")
 	public ResponseEntity<Map<Medalha, Long>> obterQuadroDeMedalhas() {
 		return ResponseEntity.ok(conquistaService.obterQuadroDeMedalhas());
+	}
+
+	/** Conquista com os dados atuais do campeonato, obtidos do campeonato-service. */
+	@GetMapping("/{id}/detalhes")
+	public ResponseEntity<ConquistaDetalheResponse> obterDetalhes(@PathVariable Long id) {
+		return ResponseEntity.ok(conquistaService.obterDetalhes(id));
 	}
 
 	@GetMapping("/alunos/{alunoId}")

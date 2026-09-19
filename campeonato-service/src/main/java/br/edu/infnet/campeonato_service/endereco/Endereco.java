@@ -1,4 +1,4 @@
-package br.edu.infnet.domingoscaldas_arquitetura.endereco;
+package br.edu.infnet.campeonato_service.endereco;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;

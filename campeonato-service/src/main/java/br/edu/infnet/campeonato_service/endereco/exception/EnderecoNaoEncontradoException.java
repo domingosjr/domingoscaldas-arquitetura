@@ -1,6 +1,6 @@
-package br.edu.infnet.domingoscaldas_arquitetura.endereco;
+package br.edu.infnet.campeonato_service.endereco.exception;
 
-import br.edu.infnet.domingoscaldas_arquitetura.exception.RecursoNaoEncontradoException;
+import br.edu.infnet.campeonato_service.exception.RecursoNaoEncontradoException;
 
 public class EnderecoNaoEncontradoException extends RecursoNaoEncontradoException {
 

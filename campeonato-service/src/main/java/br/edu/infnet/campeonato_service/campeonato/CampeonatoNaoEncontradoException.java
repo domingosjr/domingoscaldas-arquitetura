@@ -1,6 +1,6 @@
-package br.edu.infnet.domingoscaldas_arquitetura.campeonato;
+package br.edu.infnet.campeonato_service.campeonato;
 
-import br.edu.infnet.domingoscaldas_arquitetura.exception.RecursoNaoEncontradoException;
+import br.edu.infnet.campeonato_service.exception.RecursoNaoEncontradoException;
 
 public class CampeonatoNaoEncontradoException extends RecursoNaoEncontradoException {
 

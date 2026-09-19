@@ -1,4 +1,4 @@
-package br.edu.infnet.domingoscaldas_arquitetura.campeonato;
+package br.edu.infnet.campeonato_service.campeonato;
 
 import java.util.List;
 

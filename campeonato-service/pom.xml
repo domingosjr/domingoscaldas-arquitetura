@@ -9,28 +9,16 @@
 		<relativePath/> <!-- lookup parent from repository -->
 	</parent>
 	<groupId>br.edu.infnet</groupId>
-	<artifactId>domingoscaldas-arquitetura</artifactId>
+	<artifactId>campeonato-service</artifactId>
 	<version>0.0.1-SNAPSHOT</version>
-	<name/>
-	<description/>
-	<url/>
-	<licenses>
-		<license/>
-	</licenses>
-	<developers>
-		<developer/>
-	</developers>
-	<scm>
-		<connection/>
-		<developerConnection/>
-		<tag/>
-		<url/>
-	</scm>
+	<name>campeonato-service</name>
+	<description>BJJ School - servico independente de campeonatos (cadastro de eventos e consulta de CEP)</description>
 	<properties>
 		<java.version>17</java.version>
 		<spring-cloud.version>2025.1.3</spring-cloud.version>
 	</properties>
 
+	<!-- Mesmas versoes da aplicacao principal (Boot 4.1.1, Spring Cloud 2025.1.3, springdoc 3.1.0, Java 17) -->
 	<dependencyManagement>
 		<dependencies>
 			<dependency>
@@ -44,7 +32,7 @@
 	</dependencyManagement>
 
 	<dependencies>
-		<!-- Consumo do campeonato-service via OpenFeign (Etapa 2) -->
+		<!-- Consumo da API externa ViaCEP via OpenFeign -->
 		<dependency>
 			<groupId>org.springframework.cloud</groupId>
 			<artifactId>spring-cloud-starter-openfeign</artifactId>

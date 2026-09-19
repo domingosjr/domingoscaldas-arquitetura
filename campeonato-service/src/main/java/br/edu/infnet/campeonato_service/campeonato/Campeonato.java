@@ -1,19 +1,17 @@
-package br.edu.infnet.domingoscaldas_arquitetura.campeonato;
+package br.edu.infnet.campeonato_service.campeonato;
 
 import java.time.LocalDate;
 
+import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
-import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.NotNull;
-import jakarta.validation.constraints.Pattern;
-import jakarta.validation.constraints.Size;
 
 /**
- * Campeonato de Jiu-Jitsu em que os alunos competem (módulo campeonato).
+ * Campeonato de Jiu-Jitsu em que os alunos competem. A validação dos dados de
+ * entrada fica no DTO {@code CampeonatoRequest}; a entidade só mapeia a tabela.
  */
 @Entity
 @Table(name = "campeonatos")
@@ -23,17 +21,16 @@ public class Campeonato {
 	@GeneratedValue(strategy = GenerationType.IDENTITY)
 	private Long id;
 
-	@NotBlank(message = "O nome é obrigatório")
-	@Size(max = 120, message = "O nome deve possuir no máximo 120 caracteres")
+	@Column(nullable = false, length = 120)
 	private String nome;
 
-	@Size(max = 80, message = "A cidade deve possuir no máximo 80 caracteres")
+	@Column(length = 80)
 	private String cidade;
 
-	@Pattern(regexp = "\\d{8}", message = "O CEP deve possuir exatamente 8 dígitos numéricos")
+	@Column(length = 8)
 	private String cep;
 
-	@NotNull(message = "A data é obrigatória")
+	@Column(nullable = false)
 	private LocalDate data;
 
 	public Campeonato() {
