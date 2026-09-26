@@ -1,0 +1,116 @@
+# BJJ School - Etapa 3: um unico comando sobe a solucao inteira
+#   docker compose up --build
+# Antes, gere os JARs (o Dockerfile de cada aplicacao copia target/*.jar):
+#   (cd config-server && ./mvnw -DskipTests package)
+#   (cd campeonato-service && ./mvnw -DskipTests package)
+#   (cd domingoscaldas-arquitetura && ./mvnw -DskipTests package)
+#
+# Os containers se encontram pelo NOME do servico na rede "bjj-rede" (nunca por localhost):
+#   principal -> http://campeonato-service:8083   (URL servida pelo config-server, profile prod)
+#   principal -> jdbc:mysql://principal-db:3306/bjjschool
+#   campeonato-service -> jdbc:mysql://campeonato-db:3306/campeonato
+# Cada aplicacao tem o SEU banco; nenhuma acessa o banco da outra.
+# Senhas: valores padrao apenas para a demonstracao local; sobrescreva por variaveis ou por um arquivo .env
+# (ver .env.example). Em producao real, nunca deixe senhas em arquivos versionados.
+
+services:
+
+  config-server:
+    build: ./config-server
+    container_name: config-server
+    ports:
+      - "8888:8888"          # publicada so para inspecao (ex.: http://localhost:8888/domingoscaldas-arquitetura/prod)
+    healthcheck:             # as aplicacoes so sobem depois que o servidor de configuracao responde
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8888"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 20s
+    networks:
+      - bjj-rede
+
+  principal-db:              # Banco A: so da aplicacao principal
+    image: mysql:8.4
+    container_name: principal-db
+    environment:
+      MYSQL_DATABASE: bjjschool
+      MYSQL_USER: ${PRINCIPAL_DB_USERNAME:-bjj}
+      MYSQL_PASSWORD: ${PRINCIPAL_DB_PASSWORD:-bjj}
+      MYSQL_ROOT_PASSWORD: ${PRINCIPAL_DB_ROOT_PASSWORD:-root}
+    volumes:
+      - principal-dados:/var/lib/mysql   # os dados sobrevivem a remocao do container
+    healthcheck:             # ping por TCP: so responde depois que a inicializacao do MySQL termina
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root --password=$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    networks:
+      - bjj-rede
+    # porta nao publicada: so os containers da rede acessam este banco
+
+  campeonato-db:             # Banco B: so do campeonato-service
+    image: mysql:8.4
+    container_name: campeonato-db
+    environment:
+      MYSQL_DATABASE: campeonato
+      MYSQL_USER: ${CAMPEONATO_DB_USERNAME:-campeonato}
+      MYSQL_PASSWORD: ${CAMPEONATO_DB_PASSWORD:-campeonato}
+      MYSQL_ROOT_PASSWORD: ${CAMPEONATO_DB_ROOT_PASSWORD:-root}
+    volumes:
+      - campeonato-dados:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root --password=$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    networks:
+      - bjj-rede
+
+  campeonato-service:        # Servico independente (porta 8083 dentro e fora)
+    build: ./campeonato-service
+    container_name: campeonato-service
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      CONFIG_SERVER_URL: http://config-server:8888
+      DB_URL: jdbc:mysql://campeonato-db:3306/campeonato
+      DB_USERNAME: ${CAMPEONATO_DB_USERNAME:-campeonato}
+      DB_PASSWORD: ${CAMPEONATO_DB_PASSWORD:-campeonato}
+    ports:
+      - "8083:8083"
+    depends_on:
+      config-server:
+        condition: service_healthy
+      campeonato-db:
+        condition: service_healthy
+    networks:
+      - bjj-rede
+
+  principal:                 # Aplicacao principal - BJJ School (porta 8080 dentro e fora)
+    build: ./domingoscaldas-arquitetura
+    container_name: principal
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      CONFIG_SERVER_URL: http://config-server:8888
+      DB_URL: jdbc:mysql://principal-db:3306/bjjschool
+      DB_USERNAME: ${PRINCIPAL_DB_USERNAME:-bjj}
+      DB_PASSWORD: ${PRINCIPAL_DB_PASSWORD:-bjj}
+    ports:
+      - "8080:8080"
+    depends_on:
+      config-server:
+        condition: service_healthy
+      principal-db:
+        condition: service_healthy
+      campeonato-service:
+        condition: service_started   # a principal sobe mesmo sem o servico (503 ate ele responder)
+    networks:
+      - bjj-rede
+
+volumes:
+  principal-dados:
+  campeonato-dados:
+
+networks:
+  bjj-rede:

@@ -6,7 +6,8 @@
 	},
 	"variable": [
 		{ "key": "principal", "value": "http://localhost:8080" },
-		{ "key": "campeonato", "value": "http://localhost:8083" }
+		{ "key": "campeonato", "value": "http://localhost:8083" },
+		{ "key": "config", "value": "http://localhost:8888" }
 	],
 	"item": [
 		{
@@ -258,6 +259,41 @@
 						"pm.test('200 - recuperacao sem reinicio', () => pm.response.to.have.status(200));"
 					] } }],
 					"request": { "method": "GET", "header": [], "url": { "raw": "{{principal}}/conquistas/1/detalhes", "host": ["{{principal}}"], "path": ["conquistas", "1", "detalhes"] } },
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "D - Etapa 3: config-server (:8888) e execucao no Docker",
+			"description": "Configuracao centralizada. As pastas A, B e C funcionam igual com a solucao rodando no Docker Compose (mesmas portas 8080 e 8083).",
+			"item": [
+				{
+					"name": "D1 - Configuracao da aplicacao principal no profile prod (URL pelo nome do servico na rede Docker)",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('200', () => pm.response.to.have.status(200));",
+						"const s = pm.response.json().propertySources[0].source;",
+						"pm.test('URL do campeonato-service pelo nome do container', () => pm.expect(s['campeonato.service.url']).to.eql('http://campeonato-service:8083'));",
+						"pm.test('porta 8080', () => pm.expect(s['server.port']).to.eql('8080'));"
+					] } }],
+					"request": { "method": "GET", "header": [], "url": { "raw": "{{config}}/domingoscaldas-arquitetura/prod", "host": ["{{config}}"], "path": ["domingoscaldas-arquitetura", "prod"] } },
+					"response": []
+				},
+				{
+					"name": "D2 - Configuracao da aplicacao principal no profile dev (localhost)",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('200', () => pm.response.to.have.status(200));",
+						"pm.test('URL local', () => pm.expect(pm.response.json().propertySources[0].source['campeonato.service.url']).to.eql('http://localhost:8083'));"
+					] } }],
+					"request": { "method": "GET", "header": [], "url": { "raw": "{{config}}/domingoscaldas-arquitetura/dev", "host": ["{{config}}"], "path": ["domingoscaldas-arquitetura", "dev"] } },
+					"response": []
+				},
+				{
+					"name": "D3 - Configuracao do campeonato-service no profile prod",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('200', () => pm.response.to.have.status(200));",
+						"pm.test('porta 8083', () => pm.expect(pm.response.json().propertySources[0].source['server.port']).to.eql('8083'));"
+					] } }],
+					"request": { "method": "GET", "header": [], "url": { "raw": "{{config}}/campeonato-service/prod", "host": ["{{config}}"], "path": ["campeonato-service", "prod"] } },
 					"response": []
 				}
 			]

@@ -9,19 +9,292 @@ anterior ([domingoscaldas-api](https://github.com/domingosjr/domingoscaldas-api)
 
 - **Etapa 1** — a aplicação foi reorganizada por **módulos de domínio** (uma só aplicação);
 - **Etapa 2** — o cadastro de **campeonatos** foi extraído para um serviço independente, o
-  **`campeonato-service`**, consumido pela aplicação principal via **OpenFeign**.
+  **`campeonato-service`**, consumido pela aplicação principal via **OpenFeign**;
+- **Etapa 3** — configuração externa (**profiles** e **variáveis de ambiente**), **configuração
+  centralizada** (`config-server`), **MySQL** com um banco por aplicação e execução em
+  **containers** com **Docker Compose**.
 
 ```
 domingoscaldas-arquitetura/            (raiz do repositório)
-├── domingoscaldas-arquitetura/        aplicação principal — BJJ School (porta 8080)
-├── campeonato-service/                serviço independente de campeonatos (porta 8083)
-├── postman/                           coleção Postman com o roteiro de testes da Etapa 2
+├── domingoscaldas-arquitetura/        aplicação principal — BJJ School (porta 8080) + Dockerfile
+├── campeonato-service/                serviço independente de campeonatos (porta 8083) + Dockerfile
+├── config-server/                     configuração centralizada (Spring Cloud Config, porta 8888) + Dockerfile
+├── compose.yml                        sobe tudo: config-server, 2 aplicações, 2 bancos MySQL
+├── .env.example                       modelo das credenciais dos bancos (o .env real não é versionado)
+├── postman/                           coleção Postman com o roteiro de testes
 └── README.md
 ```
 
-Cada pasta é um projeto Maven completo (pom, Maven Wrapper, `application.properties`, H2 próprio) e
-sobe sozinha. Não há pom agregador nem dependência de código entre os dois projetos: o único elo é
-HTTP.
+Cada pasta é um projeto Maven completo (pom, Maven Wrapper, `application.properties`) e sobe
+sozinha. Não há pom agregador nem dependência de código entre os projetos: o único elo é HTTP.
+
+---
+
+## Etapa 3 — Configuração e Execução dos Serviços
+
+### Visão geral
+
+```
+docker compose up
+┌──────────────────────────────── rede bjj-rede ─────────────────────────────────────┐
+│                                                                                     │
+│   config-server (:8888)  ◄──── GET /domingoscaldas-arquitetura/prod ────────┐       │
+│   arquivos config/*.properties                                              │       │
+│          ▲                                                                  │       │
+│          │ GET /campeonato-service/prod                                     │       │
+│   campeonato-service (:8083) ◄─── HTTP http://campeonato-service:8083 ─── principal (:8080)
+│          │                                                                  │       │
+│          ▼                                                                  ▼       │
+│   campeonato-db (MySQL)                                           principal-db (MySQL)
+│   volume campeonato-dados                                         volume principal-dados
+└─────────────────────────────────────────────────────────────────────────────────────┘
+      portas publicadas para a máquina: 8080, 8083, 8888   (os bancos não são publicados)
+```
+
+O código Java das duas aplicações **não mudou** nesta etapa. O que mudou foi onde as
+configurações vivem e como a solução é empacotada e executada.
+
+### Configurações: o que varia entre ambientes e o que foi externalizado
+
+| Configuração | Varia? | Onde fica agora |
+|---|---|---|
+| Porta da aplicação (`server.port`) | sim | `config-server` (por profile); variável `SERVER_PORT` sobrescreve |
+| Endereço do `campeonato-service` (`campeonato.service.url`) | sim: `localhost:8083` em dev, `campeonato-service:8083` no Compose | `config-server` (por profile); variável `CAMPEONATO_SERVICE_URL` sobrescreve |
+| Endereço do ViaCEP (`viacep.url`) | pode variar (ambiente sem internet, mock) | `config-server`; variável `VIACEP_URL` |
+| URL, usuário e senha do banco | sim, e a senha é segredo | variáveis `DB_URL`, `DB_USERNAME`, `DB_PASSWORD` (profile `prod`); H2 fixo no profile `dev` |
+| Timeouts do Feign | raramente | `config-server` / `application-*.properties`, padrão 2000/3000 |
+| Profile ativo | sim | variável `SPRING_PROFILES_ACTIVE` (padrão `dev`) |
+| Endereço do `config-server` | sim | variável `CONFIG_SERVER_URL` (padrão `http://localhost:8888`) |
+| Regras de negócio, mapeamentos, rotas, tratamento de erros | **não** | código Java — igual em todos os ambientes |
+| `show-sql`, console H2, `ddl-auto` | sim | por profile: ligados em `dev`, desligados em `prod` |
+
+**Profiles** (o mesmo esquema nas duas aplicações, igual ao exemplo da aula 5):
+
+| Arquivo | Conteúdo |
+|---|---|
+| `application.properties` | o que é comum: nome da aplicação, `spring.profiles.active=${SPRING_PROFILES_ACTIVE:dev}`, `spring.config.import=optional:configserver:${CONFIG_SERVER_URL:http://localhost:8888}`, runner, Swagger, Jackson, log do Feign |
+| `application-dev.properties` | desenvolvimento: H2 em memória, console H2, `show-sql`, **valores padrão** para tudo (`${SERVER_PORT:8080}`, `${CAMPEONATO_SERVICE_URL:http://localhost:8083}`) — roda sem configurar nada |
+| `application-prod.properties` | produção: MySQL por `${DB_URL}`, `${DB_USERNAME}`, `${DB_PASSWORD}`; `${SERVER_PORT}` e `${CAMPEONATO_SERVICE_URL}` **sem valor padrão**; `show-sql=false`; console H2 desligado |
+
+Em `prod` não existe valor padrão de propósito. Se faltar configuração, a aplicação **falha ao
+subir** em vez de rodar com um valor errado. Verificado: `SPRING_PROFILES_ACTIVE=prod` sem as
+variáveis de banco encerra o processo com a mensagem `'url' must start with "jdbc"` (o
+`${DB_URL}` não foi resolvido), antes de atender qualquer requisição.
+
+**Variáveis de ambiente** usadas pela solução:
+
+| Variável | Quem usa | Exemplo no Compose |
+|---|---|---|
+| `SPRING_PROFILES_ACTIVE` | as duas aplicações | `prod` |
+| `CONFIG_SERVER_URL` | as duas aplicações | `http://config-server:8888` |
+| `DB_URL`, `DB_USERNAME`, `DB_PASSWORD` | as duas aplicações (profile `prod`) | `jdbc:mysql://principal-db:3306/bjjschool` |
+| `SERVER_PORT` | qualquer aplicação (opcional) | — |
+| `CAMPEONATO_SERVICE_URL`, `VIACEP_URL` | opcionais, sobrescrevem o `config-server` | — |
+| `PRINCIPAL_DB_*`, `CAMPEONATO_DB_*` | o próprio `compose.yml` (credenciais dos containers de banco) | ver `.env.example` |
+
+Precedência, verificada na prática: **variável de ambiente > `config-server` > arquivo local do
+profile**. Exemplo: com o `config-server` servindo `server.port=8080`, `SERVER_PORT=18080` fez a
+aplicação subir na 18080.
+
+### Configuração centralizada: `config-server`
+
+Projeto próprio e mínimo (`config-server/`): uma classe com `@EnableConfigServer`, backend
+`native` (arquivos no classpath, sem repositório git) e um arquivo por aplicação e profile em
+`src/main/resources/config/`:
+
+```
+domingoscaldas-arquitetura-dev.properties    server.port=8080  campeonato.service.url=http://localhost:8083
+domingoscaldas-arquitetura-prod.properties   server.port=8080  campeonato.service.url=http://campeonato-service:8083
+campeonato-service-dev.properties            server.port=8083  viacep.url=https://viacep.com.br/ws
+campeonato-service-prod.properties           server.port=8083  viacep.url=https://viacep.com.br/ws
+```
+
+- Ele serve **portas e URLs**, o que é "ambiente da solução"; **segredos ficam fora dele**, nas
+  variáveis do Compose.
+- As aplicações são clientes por `spring-cloud-starter-config` + `spring.config.import=optional:configserver:...`.
+  O `optional` significa: sem o servidor, a aplicação sobe com os valores locais do profile
+  (em `dev` isso basta; em `prod` a falta da URL do serviço faz a aplicação falhar cedo).
+- Conferência: `GET http://localhost:8888/domingoscaldas-arquitetura/prod` devolve o JSON com as
+  propriedades servidas (também está na pasta D da coleção Postman).
+
+### Banco de dados: um por aplicação
+
+MySQL 8.4 (versão LTS), o mesmo banco usado na disciplina anterior; o enunciado aceita
+PostgreSQL, MySQL ou equivalente. Cada container de banco recebe também uma senha de `root`
+(`PRINCIPAL_DB_ROOT_PASSWORD`, `CAMPEONATO_DB_ROOT_PASSWORD`), usada só pelo healthcheck.
+
+| Aplicação | Container | Banco | Tabelas |
+|---|---|---|---|
+| principal | `principal-db` (MySQL 8.4) | `bjjschool` | `alunos`, `instrutores`, `turmas`, `turmas_alunos`, `conquistas`, `presencas`, `graduacoes` |
+| campeonato-service | `campeonato-db` (MySQL 8.4) | `campeonato` | `campeonatos` |
+
+Nenhuma aplicação conhece o banco da outra: a `Conquista` guarda só o `campeonato_id` (mais o
+nome e a data copiados na Etapa 2), sem chave estrangeira entre bancos, e os dados de campeonato
+chegam pela API do serviço. Cada banco também tem o seu próprio usuário: o usuário da principal nem existe no
+`campeonato-db` (`Access denied for user 'bjj'`). O H2 continua existindo apenas no profile `dev`. As consultas são
+todas derivadas do Spring Data, então a troca de H2 para MySQL não mudou nenhuma linha de
+código. Cada banco tem o seu **volume** (`principal-dados`, `campeonato-dados`): remover e
+recriar os containers não apaga os dados; só `docker compose down -v` apaga.
+
+### Docker: uma imagem por aplicação
+
+Os três Dockerfiles são iguais e têm só o necessário (a receita da aula 6):
+
+```dockerfile
+FROM eclipse-temurin:17-jre
+WORKDIR /app
+COPY target/*.jar app.jar
+ENTRYPOINT ["java", "-jar", "app.jar"]
+```
+
+Sequência: código Java → `./mvnw package` gera o JAR → `docker build` copia o JAR para a imagem
+→ `docker run` cria o container. O Maven continua compilando; o Docker só empacota e executa.
+A mesma imagem serve para qualquer ambiente: o que muda é a configuração recebida na execução.
+
+### Docker Compose: a solução inteira em um comando
+
+O `compose.yml` na raiz declara cinco serviços, uma rede e dois volumes:
+
+| Serviço | Imagem | Porta publicada | Recebe |
+|---|---|---|---|
+| `config-server` | build `./config-server` | 8888 | — |
+| `principal-db` | `mysql:8.4` | não | `MYSQL_DATABASE/USER/PASSWORD/ROOT_PASSWORD`, volume `principal-dados` |
+| `campeonato-db` | `mysql:8.4` | não | idem, volume `campeonato-dados` |
+| `campeonato-service` | build `./campeonato-service` | 8083 | `SPRING_PROFILES_ACTIVE=prod`, `CONFIG_SERVER_URL`, `DB_*` |
+| `principal` | build `./domingoscaldas-arquitetura` | 8080 | `SPRING_PROFILES_ACTIVE=prod`, `CONFIG_SERVER_URL`, `DB_*` |
+
+- **Rede:** os containers se encontram pelo **nome do serviço** (`campeonato-service`,
+  `principal-db`, `config-server`). Nenhuma URL entre containers usa `localhost` — dentro de um
+  container, `localhost` é o próprio container.
+- **Ordem de subida:** `depends_on` com `condition: service_healthy` — as aplicações só sobem
+  depois que o `config-server` responde e que o seu banco aceita conexões (`mysqladmin ping` por TCP, que só responde depois que a inicialização do MySQL termina).
+- **Senhas:** o `compose.yml` usa `${PRINCIPAL_DB_PASSWORD:-bjj}`: há um valor padrão só para a
+  demonstração local, e um arquivo `.env` (não versionado, modelo em `.env.example`) ou variáveis
+  do terminal o substituem.
+
+### Como executar
+
+**1. Desenvolvimento local, sem nada além do JDK** (profile `dev`, H2, valores padrão):
+
+```bash
+cd campeonato-service && ./mvnw spring-boot:run
+cd domingoscaldas-arquitetura && ./mvnw spring-boot:run
+```
+
+**2. Desenvolvimento local com o `config-server`** (opcional; as aplicações passam a buscar porta
+e URLs nele):
+
+```bash
+cd config-server && ./mvnw spring-boot:run          # http://localhost:8888/domingoscaldas-arquitetura/dev
+```
+
+**3. Sobrescrevendo uma configuração por variável de ambiente** (Git Bash, só para a sessão do
+terminal — como na aula 5):
+
+```bash
+export SERVER_PORT=9090
+export CAMPEONATO_SERVICE_URL=http://localhost:9091
+cd domingoscaldas-arquitetura && ./mvnw spring-boot:run
+```
+
+**4. Tudo em containers** (profile `prod`, MySQL, `config-server`) — requer Docker Desktop:
+
+```bash
+# 1) gera os JARs (o Dockerfile copia target/*.jar)
+(cd config-server && ./mvnw -DskipTests package)
+(cd campeonato-service && ./mvnw -DskipTests package)
+(cd domingoscaldas-arquitetura && ./mvnw -DskipTests package)
+
+# 2) constrói as imagens e sobe os cinco containers
+docker compose up --build -d
+
+# acompanhar / parar (os dados dos bancos ficam nos volumes)
+docker compose logs -f principal
+docker compose down
+```
+
+Depois de subir: Swagger em http://localhost:8080/swagger-ui.html e
+http://localhost:8083/swagger-ui.html; configuração servida em
+http://localhost:8888/domingoscaldas-arquitetura/prod.
+
+### Testes e demonstração
+
+- **Automatizados** (`./mvnw test` em cada pasta): `config-server` (2 testes: serve a configuração
+  da principal em `prod` com a URL pelo nome do serviço, e a do `campeonato-service` em `dev`);
+  `campeonato-service` (7) e aplicação principal (12) continuam os da Etapa 2, agora rodando no
+  profile `dev` sem o `config-server` no ar (o `optional` garante isso).
+- **Coleção Postman** (`postman/`): as pastas A, B e C da Etapa 2 rodam sem alteração contra a
+  solução no Compose (mesmas portas); a pasta **D** consulta o `config-server`.
+- **Roteiro no Compose:** (1) `docker compose up --build -d` e `docker compose ps` mostram os
+  cinco containers saudáveis; (2) `GET /conquistas/1/detalhes` na 8080 responde com os dados do
+  campeonato e o log da `principal` mostra `---> GET http://campeonato-service:8083/campeonatos/1`
+  (nome do serviço, não `localhost`); (3) `POST /campeonatos` na 8083 cria um campeonato,
+  `docker compose down` + `docker compose up -d` e o registro continua lá (volume); (4)
+  `docker compose exec principal-db mysql -ubjj -pbjj bjjschool -e 'show tables'` lista só as tabelas da
+  principal e `docker compose exec campeonato-db mysql -ucampeonato -pcampeonato campeonato -e 'show tables'` só a
+  tabela `campeonatos`; (5) `docker compose stop campeonato-service` → 503 na principal, `start` →
+  volta a 200.
+
+**Resultado da execução no Compose (25/09/2026, Docker Desktop 4.85, engine 29.6.2, MySQL 8.4):**
+
+| Verificação | Resultado |
+|---|---|
+| `docker compose up --build -d` | 5 containers; bancos e `config-server` *healthy*; as duas aplicações no profile `prod` |
+| Configuração centralizada | log das duas aplicações: `Fetching config from server at : http://config-server:8888` e `Located environment: ... profiles=[prod]` |
+| Comunicação entre containers | `GET /conquistas/1/detalhes` na 8080 = 200; log: `---> GET http://campeonato-service:8083/campeonatos/1` |
+| Regra de pontos no MySQL | `/graduacoes/alunos/1/pontos` = 68; aptos = Anderson |
+| Escritas | nova conquista 201 (validada no serviço); novo campeonato com CEP 201, cidade `Rio de Janeiro - RJ` vinda do ViaCEP de dentro do container |
+| Um banco por aplicação | `bjjschool`: alunos, conquistas, graduacoes, instrutores, presencas, turmas, turmas_alunos; `campeonato`: campeonatos; o usuário da principal recebe `Access denied` no banco do serviço |
+| Persistência | `docker compose down` + `up -d`: o campeonato criado e a conquista nova continuam lá (3 campeonatos, 4 conquistas); o seed não duplicou |
+| Serviço parado | `docker compose stop campeonato-service`: detalhes = 503 com `ErroResponse`; pontos continuam 200; `start`: serviço e principal voltam a responder em cerca de 6 s, sem reiniciar a principal |
+
+### Reflexão
+
+**1. Quais configurações variam entre ambientes?**
+Porta de cada aplicação, endereço do serviço consumido (`localhost` em desenvolvimento, nome do
+container no Compose), endereço da API externa, URL/usuário/senha do banco, o próprio profile
+ativo, o endereço do `config-server`, e ajustes de execução como `show-sql`, console H2 e
+`ddl-auto`. As regras de negócio (por exemplo, "conquista exige campeonato existente") não variam.
+
+**2. Quais foram externalizadas?**
+Todas as da lista acima. Nenhuma porta, endereço ou credencial existe no código Java: portas e
+URLs vêm do `config-server` (com padrão local no profile `dev`), credenciais do banco vêm só de
+variáveis de ambiente e o profile vem de `SPRING_PROFILES_ACTIVE`. O H2 continua fixo no profile
+`dev` por ser um banco descartável de desenvolvimento.
+
+**3. Por que um serviço não deve acessar o banco de outro?**
+Porque o banco é um detalhe interno de quem é dono dos dados. Se a principal lesse a tabela
+`campeonatos` diretamente, qualquer mudança de esquema no `campeonato-service` quebraria a
+principal em silêncio, a validação e as regras do serviço seriam contornadas e os dois deixariam
+de evoluir e de ser implantados de forma independente. A comunicação pela API (`GET
+/campeonatos/{id}`) é o contrato; o banco não é.
+
+**4. Que problema o Docker resolve?**
+A diferença entre máquinas. Sem ele, cada pessoa precisaria instalar o JDK certo, o MySQL,
+configurar portas e iniciar processos na ordem certa, e o mesmo código se comportaria diferente
+em cada ambiente. A imagem fixa o runtime (`eclipse-temurin:17-jre`), o artefato e o comando de
+início; o container é a execução isolada dessa imagem, igual em qualquer máquina.
+
+**5. Qual a função do Docker Compose?**
+Descrever a solução inteira em um arquivo e subi-la com um comando: as cinco partes, as
+variáveis que cada uma recebe, as portas publicadas, os volumes dos bancos, a rede em que os
+containers se encontram pelo nome e a ordem de subida (`depends_on` com healthcheck). Sem ele
+seriam cinco `docker run` com dezenas de parâmetros fáceis de esquecer.
+
+**6. Que problema a configuração centralizada resolve?**
+Configuração espalhada e duplicada. Com duas aplicações (e mais na sequência), cada uma teria
+seus próprios arquivos com as mesmas decisões de ambiente — a porta do serviço, a URL do ViaCEP —
+e uma mudança exigiria editar e reimplantar cada projeto. O `config-server` guarda essas decisões
+em um só lugar, por aplicação e por profile, e as aplicações as buscam ao subir. Nesta etapa ele
+serve portas e URLs; segredos continuam fora dele, em variáveis do ambiente.
+
+### Limites conhecidos
+
+- Em `prod` usamos `ddl-auto=update` para o Compose criar o esquema no primeiro start. Em produção
+  real o correto seria `validate` com uma ferramenta de migração (Flyway/Liquibase).
+- O `config-server` não tem autenticação nem HTTPS; serve só configurações não sensíveis.
+- Os JARs são gerados fora do Docker (`./mvnw package`) antes do `docker compose up --build`,
+  como na aula; um build multi-stage faria isso dentro da imagem.
 
 ---
 
@@ -400,3 +673,5 @@ onde o candidato foi revisto (ver "Por que o candidato mudou em relação à Eta
   serviço independente.
 - **etapa-2** — `campeonato-service` separado e consumido pela aplicação principal via OpenFeign, com
   tratamento de indisponibilidade.
+- **etapa-3** — profiles e variáveis de ambiente, `config-server`, MySQL com um banco por
+  aplicação, Dockerfiles e `docker compose up`.
