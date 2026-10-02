@@ -12,21 +12,315 @@ anterior ([domingoscaldas-api](https://github.com/domingosjr/domingoscaldas-api)
   **`campeonato-service`**, consumido pela aplicação principal via **OpenFeign**;
 - **Etapa 3** — configuração externa (**profiles** e **variáveis de ambiente**), **configuração
   centralizada** (`config-server`), **MySQL** com um banco por aplicação e execução em
-  **containers** com **Docker Compose**.
+  **containers** com **Docker Compose**;
+- **Etapa 4** — **mensageria assíncrona** com **RabbitMQ** (o `campeonato-service` avisa a principal
+  quando um campeonato é alterado) e **processamento em lote** com **Spring Batch** (importação da
+  lista de presença por CSV). É a versão final.
 
 ```
 domingoscaldas-arquitetura/            (raiz do repositório)
 ├── domingoscaldas-arquitetura/        aplicação principal — BJJ School (porta 8080) + Dockerfile
 ├── campeonato-service/                serviço independente de campeonatos (porta 8083) + Dockerfile
 ├── config-server/                     configuração centralizada (Spring Cloud Config, porta 8888) + Dockerfile
-├── compose.yml                        sobe tudo: config-server, 2 aplicações, 2 bancos MySQL
-├── .env.example                       modelo das credenciais dos bancos (o .env real não é versionado)
+├── compose.yml                        sobe tudo: config-server, 2 aplicações, 2 bancos MySQL, RabbitMQ
+├── .env.example                       modelo das credenciais dos bancos e do RabbitMQ (o .env real não é versionado)
 ├── postman/                           coleção Postman com o roteiro de testes
 └── README.md
 ```
 
 Cada pasta é um projeto Maven completo (pom, Maven Wrapper, `application.properties`) e sobe
-sozinha. Não há pom agregador nem dependência de código entre os projetos: o único elo é HTTP.
+sozinha. Não há pom agregador nem dependência de código entre os projetos: os únicos elos são HTTP
+e, desde a Etapa 4, a fila do RabbitMQ.
+
+---
+
+## Etapa 4 — Comunicação Assíncrona e Processamento em Lote
+
+### Arquitetura final
+
+```
+                                   REST (síncrono, Etapa 2)
+ Cliente ──HTTP──► principal (:8080) ──── OpenFeign: GET /campeonatos/{id} ────► campeonato-service (:8083)
+                   API REST + regras                                             API REST de campeonatos
+                        │                                                              │
+                        ▼                                                              ▼
+                  principal-db (MySQL)                                          campeonato-db (MySQL)
+                        ▲                                                              │
+                        │ atualiza o nome e a data                                     │ PUT /campeonatos/{id}
+                        │ copiados nas conquistas                                      │ publica a mensagem
+                        │                                                              ▼
+              CampeonatoAlteradoConsumer ◄──── fila "campeonatos.alterados" ◄──── RabbitMQ (:5672)
+                   (consumidor)                (durável)                         painel :15672
+                                          MENSAGERIA (assíncrona)
+
+ LOTE:  presencas.csv ──► importarPresencasJob [ItemReader → ItemProcessor → ItemWriter, chunks de 5] ──► tabela presencas
+        (69 linhas)        disparado por POST /importacoes/presencas na principal                        (principal-db)
+```
+
+As três formas de comunicação convivem, cada uma por uma necessidade real do domínio:
+
+| Forma | Onde está no projeto | Por que essa forma |
+|---|---|---|
+| **REST** (Etapa 2) | registrar uma conquista: a principal pergunta ao `campeonato-service` se o campeonato existe | a principal precisa da resposta **agora**, antes de gravar; o cliente espera 201 ou 404 |
+| **Mensageria** (Etapa 4) | alterar um campeonato: o `campeonato-service` avisa por mensagem quem guarda cópia dos dados | ninguém espera a atualização da cópia; o serviço termina o seu trabalho mesmo com a principal fora do ar |
+| **Batch** (Etapa 4) | importar a lista de presença do período: dezenas de registros de uma vez, a partir de um arquivo | é um volume de dados que chega junto, com validação linha a linha, sem ninguém esperando registro por registro |
+
+As partes não precisam estar todas ligadas entre si (o lote não usa a fila, por exemplo), e nenhuma
+foi criada só para cumprir o item: a mensagem resolve uma limitação registrada na Etapa 2, e o lote
+alimenta a regra de graduação que já existia.
+
+### Mensageria: campeonato alterado
+
+**O problema.** Desde a Etapa 2 a `Conquista` guarda uma **cópia** do nome e da data do campeonato
+(a regra de pontos precisa da data mesmo com o serviço fora do ar). A reflexão da Etapa 2 registrou
+o custo: *essa cópia pode ficar desatualizada se o campeonato for alterado*. Agora, quando um
+campeonato é alterado no `campeonato-service`, ele publica uma mensagem, e a aplicação principal
+atualiza as cópias.
+
+**Quem produz e quem consome.** No diagrama do enunciado a aplicação principal é a produtora. Aqui a
+direção é a inversa, e isso segue a posse dos dados: o fato ("o campeonato 1 mudou") acontece no
+`campeonato-service`, dono dos campeonatos, e quem tem interesse nele é a principal, dona das
+conquistas. O serviço não conhece a principal (nem a URL, nem o banco): só publica o fato na fila.
+
+| Peça | Onde | O que faz |
+|---|---|---|
+| Broker | container `rabbitmq` (`rabbitmq:4-management`) | guarda a fila e as mensagens; painel em http://localhost:15672 (usuário `bjj`, senha `bjj`) |
+| Fila | `campeonatos.alterados`, **durável** | declarada pelas duas aplicações (`MensageriaConfig`), então existe mesmo que o consumidor nunca tenha subido |
+| Mensagem | record `CampeonatoAlteradoMessage(campeonatoId, nome, data)` | só o necessário para atualizar a cópia; em JSON, persistente (`delivery_mode` 2) |
+| Produtor | `CampeonatoAlteradoProducer` no `campeonato-service` | `rabbitTemplate.convertAndSend("campeonatos.alterados", mensagem)` depois de gravar a alteração |
+| Consumidor | `CampeonatoAlteradoConsumer` na principal | `@RabbitListener(queues = "campeonatos.alterados")` → `ConquistaService.atualizarDadosDoCampeonato` |
+| Conversor | `JacksonJsonMessageConverter` nas duas aplicações | objeto ↔ JSON |
+
+Mensagem como ela fica na fila (lida pelo painel do RabbitMQ):
+
+```json
+{"campeonatoId":1,"nome":"Copa Rio de Jiu-Jitsu 2026","data":"2026-05-18"}
+```
+
+Como o `CampeonatoResponse` da Etapa 2, o record da mensagem existe nos dois projetos, sem
+biblioteca compartilhada. O consumidor converte o JSON pelo tipo do parâmetro do método, então o
+cabeçalho `__TypeId__` que o produtor envia (o nome da classe dele) não precisa existir do lado da
+principal.
+
+**O que acontece em cada falha** (todas verificadas no Compose, ver a tabela de resultados abaixo):
+
+| Situação | Comportamento |
+|---|---|
+| **Consumidor fora do ar** (principal parada) | a alteração do campeonato responde 200; a mensagem **fica na fila** (`messages_ready` = 1, `consumers` = 0) e é processada quando a principal volta, sem nenhuma ação manual |
+| **Broker fora do ar** | a alteração do campeonato continua valendo (200); o produtor registra `WARN Mensagem NAO publicada (broker indisponivel)` e a mensagem se perde, então a cópia fica desatualizada até a próxima alteração. A principal sobe e funciona sem o broker; o listener tenta reconectar a cada 5 s |
+| **Erro ao processar** a mensagem | `spring.rabbitmq.listener.simple.default-requeue-rejected=false`: a mensagem é descartada com erro no log, em vez de voltar para a fila e falhar em loop |
+| **Credenciais erradas** | a aplicação não sobe (falha rápida de configuração, como em `prod` sem as variáveis do banco) |
+
+**Processar duas vezes não estraga nada:** o consumidor grava valores absolutos (o nome e a data
+novos), não incrementos. **Competição entre consumidores:** durante os testes, uma principal em
+`dev` e a do Compose ficaram ligadas na mesma fila, e cada mensagem foi entregue a **uma** delas só.
+É o comportamento de fila, que serve para réplicas da mesma aplicação (mesmo banco). Se outra
+aplicação também quisesse saber das alterações, ela teria a sua própria fila, ligada a uma
+*exchange* do tipo *fanout*.
+
+### Processamento em lote: importação da lista de presença
+
+**O problema.** A presença é o que dá pontos para a graduação (1 ponto por treino desde a última
+graduação). Na academia, a lista do período costuma chegar de uma vez (planilha da recepção, catraca,
+tablet do tatame). Registrar uma a uma pelo `POST /presencas/alunos/{alunoId}` não é viável, e
+precisa de validação: alunos que não existem, datas erradas, grafias diferentes do tipo de treino.
+
+**Fluxo:** `presencas.csv` → **ItemReader** → **ItemProcessor** → **ItemWriter** → tabela `presencas`.
+
+| Componente | Classe / bean | O que faz |
+|---|---|---|
+| Fonte | `src/main/resources/batch/presencas.csv` | cabeçalho `alunoId;data;tipoTreino` + 69 linhas |
+| **Job** | `importarPresencasJob` (`BatchConfig`) | dois passos: importar e depois resumir; `RunIdIncrementer` permite executar de novo |
+| **Step** 1 | `importarPresencasStep` | orientado a **chunks de 5**: lê 5 linhas, processa, grava e confirma a transação; 69 linhas = 14 transações |
+| **ItemReader** | `FlatFileItemReader<PresencaBatch>` | pula o cabeçalho, separa por `;`, monta o record `PresencaBatch` (a data ainda é texto) |
+| **ItemProcessor** | `PresencaProcessor` | valida e normaliza; linha inválida devolve `null` (o Spring Batch conta como *filtrada* e não a envia ao writer) |
+| **ItemWriter** | lambda em `BatchConfig` | grava cada presença do chunk pelo `GraduacaoService.registrarPresenca` (a persistência da própria principal) |
+| Step 2 | `resumirImportacaoStep` (tasklet) | registra no log o resumo: lidas, ignoradas, gravadas |
+| Disparo | `POST /importacoes/presencas` (`ImportacaoController` → `ImportacaoPresencasService`) | o Job não roda ao subir a aplicação (`spring.batch.job.enabled=false`); a resposta traz os totais do Step 1 |
+
+Regras do processor (cada linha ignorada aparece no log com o motivo):
+
+| Regra | Exemplo no CSV | Resultado |
+|---|---|---|
+| aluno inexistente | `99;2026-09-01;Gi` | ignorada |
+| aluno inativo | `3;2026-09-01;Gi` (Carlos) | ignorada |
+| data inválida | `2;2026-02-30;Gi` | ignorada |
+| data futura | `1;2099-01-10;Gi` | ignorada |
+| tipo de treino vazio | `1;2026-09-06; ` | ignorada |
+| presença já registrada | `1;2026-01-05;Gi` (já existe no seed) | ignorada — por isso importar de novo não duplica nada |
+| tipo de treino com grafia diferente | ` gi `, `GI`, `nogi`, `NO GI` | normalizada para `Gi` / `No-Gi` |
+
+O CSV de exemplo tem 69 linhas: 9 inválidas de propósito, 5 presenças novas do Anderson e 55 da
+Beatriz. **Efeito visível na regra:** a Beatriz (faixa azul, que exige 60 pontos) passa a estar
+apta à graduação.
+
+| Execução | Lidas | Ignoradas | Gravadas |
+|---|---|---|---|
+| 1ª | 69 | 9 | 60 |
+| 2ª (mesmo arquivo) | 69 | 69 | 0 |
+
+Os metadados das execuções ficam nas tabelas `BATCH_*` **no banco da própria principal** (H2 em
+`dev`; MySQL em `prod`, criadas por `spring.batch.jdbc.initialize-schema=always`). Consulta no MySQL
+depois das duas execuções:
+
+```
+STEP_NAME               READ_COUNT  FILTER_COUNT  WRITE_COUNT  COMMIT_COUNT
+importarPresencasStep       69           9            60           14
+resumirImportacaoStep        0           0             0            1
+importarPresencasStep       69          69             0           14
+resumirImportacaoStep        0           0             0            1
+```
+
+**Diferenças em relação à aula (Spring Batch 6, que vem com o Spring Boot 4):** as classes mudaram
+de pacote (`org.springframework.batch.core.job.Job`, `...core.step.Step`,
+`org.springframework.batch.infrastructure.item.ItemWriter`, `...infrastructure.item.file.FlatFileItemReader`);
+o chunk é declarado como `.<PresencaBatch, PresencaImportada>chunk(5).transactionManager(tm)`; o
+Job é disparado pelo `JobOperator` (`startNextInstance`); e o starter é
+`spring-boot-starter-batch-jdbc`, que guarda os metadados no banco. Os conceitos (Job, Step, reader,
+processor, writer, chunk, tasklet) são os mesmos.
+
+### Mensageria × Batch
+
+| | Mensageria | Batch |
+|---|---|---|
+| Gatilho | um fato que acabou de acontecer (um campeonato foi alterado) | um conjunto de dados que chegou ou um horário (a lista do período) |
+| Unidade | uma mensagem pequena por fato | muitos registros processados juntos, em chunks |
+| Tempo | quase imediato (menos de 1 s no teste), mas sem ninguém esperando | quando for disparado; pode demorar, e o volume importa mais que a latência |
+| Acoplamento | produtor e consumidor não se conhecem e não precisam estar no ar ao mesmo tempo | uma só aplicação lê a fonte e grava no próprio banco |
+| Falha | a mensagem espera na fila até o consumidor voltar | o chunk com erro é desfeito; os metadados em `BATCH_*` registram o que foi feito |
+| Neste projeto | `campeonatos.alterados` | `importarPresencasJob` |
+
+### Como executar
+
+**Tudo em containers** (como na Etapa 3, agora com seis containers: `rabbitmq` a mais):
+
+```bash
+(cd config-server && ./mvnw -DskipTests package)
+(cd campeonato-service && ./mvnw -DskipTests package)
+(cd domingoscaldas-arquitetura && ./mvnw -DskipTests package)
+docker compose up --build -d
+```
+
+O `rabbitmq` tem healthcheck (`rabbitmq-diagnostics ping`), e as duas aplicações só sobem depois
+dele. As credenciais vêm de `RABBITMQ_USERNAME` / `RABBITMQ_PASSWORD` (padrão `bjj`, ver
+`.env.example`); o endereço (`rabbitmq:5672` no Compose, `localhost:5672` em dev) vem do
+`config-server`.
+
+**Desenvolvimento local** (H2): só o broker em container, as aplicações pelo Maven:
+
+```bash
+docker compose up -d rabbitmq
+cd campeonato-service && ./mvnw spring-boot:run
+cd domingoscaldas-arquitetura && ./mvnw spring-boot:run
+```
+
+Sem o broker as duas aplicações sobem do mesmo jeito: o lote funciona, a alteração de campeonato
+funciona (sem publicar a mensagem) e o consumidor fica tentando reconectar.
+
+**Roteiro de demonstração:**
+
+1. **Lote:** `GET /graduacoes/aptos` (só o Anderson) → `POST http://localhost:8080/importacoes/presencas`
+   (69 lidas, 9 ignoradas, 60 gravadas; o log mostra cada linha ignorada e cada chunk gravado) →
+   `GET /graduacoes/aptos` (Anderson e Beatriz) → repetir o POST (0 gravadas).
+2. **Mensagem:** `PUT http://localhost:8083/campeonatos/1` com o nome `Copa Rio de Jiu-Jitsu 2026` →
+   log do serviço `Mensagem enviada para a fila campeonatos.alterados`, log da principal
+   `Mensagem recebida ... -> 3 conquista(s) atualizada(s)` → `GET http://localhost:8080/conquistas/1`
+   mostra o nome novo.
+3. **Consumidor indisponível:** `docker compose stop principal` → `PUT` de novo no campeonato 1 (200)
+   → painel http://localhost:15672, aba *Queues*: `campeonatos.alterados` com **Ready 1** e 0
+   consumidores → `docker compose start principal` → a mensagem é consumida (Ready 0) e a conquista
+   mostra o dado novo.
+
+### Testes e demonstração
+
+- **Automatizados** (`./mvnw test`): `campeonato-service` (10: os 7 da Etapa 2, mais o produtor
+  publicando na fila certa, o produtor não repassando a falha do broker e a alteração pela API
+  publicando a mensagem com o nome e a data novos); aplicação principal (19: os 12 anteriores, mais
+  as 5 regras do processor, o Job de ponta a ponta — 69/9/60, Beatriz com 60 pontos e apta, segunda
+  execução com 0 gravadas — e o consumidor atualizando as três conquistas); `config-server` (2).
+  Nos testes o listener não é iniciado (não há broker na máquina de build).
+- **Coleção Postman**: pasta **E** (lote: pontos antes, importação, +55 pontos, Beatriz apta, nova
+  execução sem duplicar) e pasta **F** (mensageria: alterar o campeonato e ver a conquista mudar;
+  parar a principal, alterar de novo, ver a mensagem esperando na fila pela API do painel e religar).
+
+**Resultado da execução no Compose (30/09/2026, Docker Desktop 4.85, RabbitMQ 4, MySQL 8.4):**
+
+| Verificação | Resultado |
+|---|---|
+| `docker compose up --build -d` | 6 containers; `rabbitmq`, bancos e `config-server` *healthy*; log da principal: `Created new connection: ... amqp://bjj@...:5672/` |
+| Lote no MySQL | 1ª execução `COMPLETED` 69/9/60; Beatriz 15 → 70 pontos (+55), Anderson 68 → 73; aptos: Anderson e Beatriz; 2ª execução 69/69/0; 9 tabelas `BATCH_*` no `bjjschool`; a principal reinicia sem erro com as tabelas já criadas |
+| Mensagem com as duas no ar | `PUT /campeonatos/1` → em cerca de 0,4 s o log da principal mostra `3 conquista(s) atualizada(s)`; as conquistas 1, 2 e 3 com o nome e a data novos |
+| Consumidor indisponível | `docker stop principal` + `PUT` (200) → fila com `messages_ready` 1 e `consumers` 0 → `docker start principal` → fila em 0, consumidor 1, conquistas atualizadas |
+| Broker reiniciado com mensagem parada | principal parada, `PUT`, `docker restart rabbitmq` → a fila volta com `messages_ready` 1 (fila durável, mensagem persistente) → `docker start principal` → processada |
+| Broker indisponível | `docker stop rabbitmq` + `PUT /campeonatos/2` → 200 e `WARN Mensagem NAO publicada`; a principal continua 200; `docker start rabbitmq` → o consumidor se reconecta sozinho |
+
+### Reflexão
+
+**1. Qual operação foi escolhida para ser assíncrona?**
+A atualização das cópias de um campeonato alterado. Quando o `PUT /campeonatos/{id}` grava a
+alteração no `campeonato-service`, ele publica `CampeonatoAlteradoMessage` (id, nome e data) na fila
+`campeonatos.alterados`; a aplicação principal consome e atualiza o nome e a data guardados nas
+conquistas daquele campeonato.
+
+**2. Por que ela pode ser assíncrona?**
+Porque ninguém precisa do resultado dentro da requisição. Quem altera o campeonato quer ver o
+campeonato alterado, e isso já está garantido no banco do serviço. A cópia na principal só precisa
+ficar certa logo depois, e alguns milissegundos (ou minutos, se a principal estiver fora) de
+diferença não quebram nenhuma regra. Se fosse síncrona (o serviço chamando a principal por REST),
+o serviço passaria a conhecer a principal e a depender dela: com a principal fora do ar, alterar um
+campeonato falharia, ou a mudança se perderia. Com a fila, as duas aplicações não precisam estar no
+ar ao mesmo tempo.
+
+**3. O que acontece com a mensagem se o consumidor estiver indisponível?**
+Ela fica guardada na fila do broker. A fila é durável e a mensagem é persistente, então ela espera
+(no teste: `messages_ready` = 1, `consumers` = 0) até a principal voltar. Ao subir, o listener se
+registra na fila, recebe a mensagem, atualiza as conquistas e confirma; só então a mensagem sai da
+fila. Nada é perdido e não é preciso reenviar nada. O limite dessa garantia é o broker: se ele
+estiver fora do ar no momento da publicação, a mensagem não chega a existir (o produtor registra o
+aviso), e isso está nos limites abaixo.
+
+**4. Qual funcionalidade foi escolhida para processamento em lote?**
+A importação da lista de presença: um CSV com as presenças do período (aluno, data, tipo de treino)
+é lido, validado e normalizado linha a linha, e as presenças válidas são gravadas em chunks de 5 na
+tabela `presencas` da aplicação principal, alimentando a regra de pontos da graduação.
+
+**5. Por que ela é adequada para Batch?**
+Porque é um conjunto grande de registros que chega de uma vez, sem ninguém esperando cada um. O
+Batch dá o que esse caso precisa: leitura estruturada do arquivo, uma etapa própria para validar e
+descartar linhas ruins sem derrubar a importação, gravação em chunks (um erro desfaz só aquele
+chunk; os anteriores continuam gravados) e o registro de cada execução (`BATCH_*`: quantas linhas foram lidas,
+filtradas e gravadas). Por REST seriam 69 requisições feitas por alguém ou por um script, sem
+controle do conjunto. Por mensageria seriam 69 mensagens para um dado que já chegou junto.
+
+**6. Quando usar REST, mensageria ou Batch?**
+- **REST** quando quem chama precisa da resposta para continuar: registrar uma conquista exige saber,
+  naquele momento, se o campeonato existe (201 ou 404). É o mais simples, mas acopla no tempo: se o
+  outro lado cai, a operação falha (os 503 da Etapa 2).
+- **Mensageria** quando algo aconteceu e outros precisam saber, mas não precisam responder: alterar
+  um campeonato e atualizar as cópias. O produtor termina o seu trabalho, e o consumidor processa
+  quando puder, mesmo depois de ficar fora do ar.
+- **Batch** quando o trabalho é um volume de dados tratado em conjunto, agendado ou disparado sob
+  demanda: importar a lista de presença. O importante é processar tudo com controle, validação e
+  registro, não responder rápido.
+
+A mesma funcionalidade pode combinar as três. Registrar presença é REST quando o professor marca na
+hora, e é Batch quando chega a lista do mês. As três formas de comunicação somam; nenhuma substitui
+as outras.
+
+### Limites conhecidos
+
+- **Broker fora do ar na publicação:** a alteração do campeonato é gravada e a mensagem se perde
+  (fica só o aviso no log). A solução completa seria o padrão *outbox*: gravar a mensagem numa tabela
+  na mesma transação da alteração e publicar depois. Ficou fora por simplicidade.
+- **Sem volume nomeado para o RabbitMQ:** mensagens paradas na fila sobrevivem ao restart do
+  container (verificado), mas não a `docker compose down`, que remove o container.
+- **Sem fila de mensagens mortas (DLQ):** a mensagem que falhar no consumidor é descartada com erro no
+  log; o certo seria desviá-la para uma fila de análise.
+- **Contrato duplicado:** o record da mensagem existe nos dois projetos e precisa coincidir.
+- **Lote:** o arquivo é fixo no classpath (num caso real viria de um upload ou de uma pasta); o Job
+  roda dentro da requisição HTTP, o que serve para 69 linhas mas não para arquivos grandes; e duas
+  linhas iguais no mesmo chunk não são detectadas como repetidas, porque a verificação consulta o
+  banco antes de o chunk ser gravado.
 
 ---
 
@@ -504,6 +798,7 @@ sozinho; extraído junto com o módulo que o usa, passou a fazer sentido.
   pode falhar: foi preciso client, gateway, duas exceções novas, timeouts e uma resposta 503.
 - A chave estrangeira `campeonato_id` deixou de existir. A conquista guarda um identificador externo
   e uma cópia do nome e da data; essa cópia pode ficar desatualizada se o campeonato for alterado.
+  *(Resolvido na Etapa 4: a alteração publica uma mensagem e a principal atualiza as cópias.)*
 - O contrato (`CampeonatoResponse`) existe nos dois projetos e precisa coincidir; uma divergência só
   aparece em tempo de execução.
 - A operação passou a ter dois processos, duas portas, dois bancos, dois logs e dados de
@@ -533,6 +828,9 @@ obrigação tecnológica.
   específico do H2; cada pasta recebe o seu Dockerfile.
 - **Etapa 4:** candidatos naturais — mensagem `CONQUISTA_REGISTRADA` para notificação, e importação do
   calendário de campeonatos a partir de um CSV com Spring Batch no `campeonato-service`.
+  *(Na Etapa 4 a escolha mudou para o que resolvia problemas reais: a mensagem de campeonato alterado,
+  que corrige a cópia desatualizada do item 3 acima, e a importação da lista de presença, que alimenta
+  a regra de graduação.)*
 
 ---
 
@@ -675,3 +973,6 @@ onde o candidato foi revisto (ver "Por que o candidato mudou em relação à Eta
   tratamento de indisponibilidade.
 - **etapa-3** — profiles e variáveis de ambiente, `config-server`, MySQL com um banco por
   aplicação, Dockerfiles e `docker compose up`.
+- **etapa-4** — versão final: mensageria com RabbitMQ (produtor no `campeonato-service`, fila
+  `campeonatos.alterados`, consumidor na principal) e Spring Batch (importação da lista de presença
+  em chunks).

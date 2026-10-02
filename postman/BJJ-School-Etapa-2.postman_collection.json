@@ -1,13 +1,14 @@
 {
 	"info": {
-		"name": "BJJ School - Etapa 2 (campeonato-service + OpenFeign)",
-		"description": "Roteiro de testes da Etapa 2 do projeto domingoscaldas-arquitetura (Infnet - Arquiteturas Avancadas com Microsservicos e Spring).\n\nVariaveis: `principal` = aplicacao principal (:8080), `campeonato` = campeonato-service (:8083).\n\nPastas:\n- A: campeonato-service isolado (funciona sem a aplicacao principal).\n- B: atraves da aplicacao principal, com as duas no ar. Acompanhe o console da principal: cada chamada Feign aparece como `---> GET http://localhost:8083/campeonatos/1` / `<--- HTTP/1.1 200`.\n- C: campeonato-service DESLIGADO. So o que depende dele responde 503; o resto continua.\n\nEstado: H2 em memoria. Reinicie as aplicacoes para voltar aos dados de demonstracao.",
+		"name": "BJJ School - Etapas 2 a 4 (campeonato-service, OpenFeign, config-server, Batch, RabbitMQ)",
+		"description": "Roteiro de testes do projeto domingoscaldas-arquitetura (Infnet - Arquiteturas Avancadas com Microsservicos e Spring), Etapas 2 a 4.\n\nVariaveis: `principal` = aplicacao principal (:8080), `campeonato` = campeonato-service (:8083), `config` = config-server (:8888), `rabbitmq` = painel do RabbitMQ (:15672).\n\nPastas:\n- A: campeonato-service isolado (funciona sem a aplicacao principal).\n- B: atraves da aplicacao principal, com as duas no ar. Acompanhe o console da principal: cada chamada Feign aparece como `---> GET http://localhost:8083/campeonatos/1` / `<--- HTTP/1.1 200`.\n- C: campeonato-service DESLIGADO. So o que depende dele responde 503; o resto continua.\n- D: Etapa 3 - configuracao centralizada no config-server.\n- E: Etapa 4 - processamento em lote (Spring Batch): importacao da lista de presenca.\n- F: Etapa 4 - mensageria (RabbitMQ): campeonato alterado, inclusive com o consumidor fora do ar.\n\nEstado: com H2 (mvnw), reinicie as aplicacoes para voltar aos dados de demonstracao; no Docker Compose os dados ficam nos volumes do MySQL (docker compose down -v recomeca do zero).",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
 	},
 	"variable": [
 		{ "key": "principal", "value": "http://localhost:8080" },
 		{ "key": "campeonato", "value": "http://localhost:8083" },
-		{ "key": "config", "value": "http://localhost:8888" }
+		{ "key": "config", "value": "http://localhost:8888" },
+		{ "key": "rabbitmq", "value": "http://localhost:15672" }
 	],
 	"item": [
 		{
@@ -294,6 +295,129 @@
 						"pm.test('porta 8083', () => pm.expect(pm.response.json().propertySources[0].source['server.port']).to.eql('8083'));"
 					] } }],
 					"request": { "method": "GET", "header": [], "url": { "raw": "{{config}}/campeonato-service/prod", "host": ["{{config}}"], "path": ["campeonato-service", "prod"] } },
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "E - Etapa 4: processamento em lote (Spring Batch)",
+			"description": "Importa a lista de presenca (domingoscaldas-arquitetura/src/main/resources/batch/presencas.csv, 69 linhas) em chunks de 5: reader (CSV) -> processor (valida e normaliza; linha invalida e ignorada) -> writer (registra a presenca). Os numeros 69/9/60 valem para a primeira execucao em estado limpo (H2: reinicie a principal; Docker: volumes novos). Acompanhe o console: cada linha ignorada aparece com o motivo.",
+			"item": [
+				{
+					"name": "E1 - Pontos da Beatriz antes da importacao (guarda o valor)",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('200', () => pm.response.to.have.status(200));",
+						"pm.collectionVariables.set('pontosBeatrizAntes', Number(pm.response.text()));"
+					] } }],
+					"request": { "method": "GET", "header": [], "url": { "raw": "{{principal}}/graduacoes/alunos/2/pontos", "host": ["{{principal}}"], "path": ["graduacoes", "alunos", "2", "pontos"] } },
+					"response": []
+				},
+				{
+					"name": "E2 - Importa a lista de presenca: 69 lidas, 9 ignoradas, 60 gravadas",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('200', () => pm.response.to.have.status(200));",
+						"pm.test('Job COMPLETED com os totais do Step', () => pm.expect(pm.response.json()).to.include({status: 'COMPLETED', lidas: 69, ignoradas: 9, gravadas: 60}));"
+					] } }],
+					"request": { "method": "POST", "header": [], "url": { "raw": "{{principal}}/importacoes/presencas", "host": ["{{principal}}"], "path": ["importacoes", "presencas"] } },
+					"response": []
+				},
+				{
+					"name": "E3 - Pontos da Beatriz: +55 (as presencas importadas entram na regra de graduacao)",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('200', () => pm.response.to.have.status(200));",
+						"pm.test('55 presencas novas', () => pm.expect(Number(pm.response.text())).to.eql(pm.collectionVariables.get('pontosBeatrizAntes') + 55));"
+					] } }],
+					"request": { "method": "GET", "header": [], "url": { "raw": "{{principal}}/graduacoes/alunos/2/pontos", "host": ["{{principal}}"], "path": ["graduacoes", "alunos", "2", "pontos"] } },
+					"response": []
+				},
+				{
+					"name": "E4 - Aptos a graduacao: a Beatriz passa a aparecer",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('200', () => pm.response.to.have.status(200));",
+						"pm.test('Beatriz apta', () => pm.expect(pm.response.json().map(a => a.nome)).to.include('Beatriz Lima'));"
+					] } }],
+					"request": { "method": "GET", "header": [], "url": { "raw": "{{principal}}/graduacoes/aptos", "host": ["{{principal}}"], "path": ["graduacoes", "aptos"] } },
+					"response": []
+				},
+				{
+					"name": "E5 - Executa de novo: 0 gravadas (tudo ja importado, nada duplica)",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('200', () => pm.response.to.have.status(200));",
+						"pm.test('nova execucao, nenhuma presenca duplicada', () => pm.expect(pm.response.json()).to.include({status: 'COMPLETED', lidas: 69, ignoradas: 69, gravadas: 0}));"
+					] } }],
+					"request": { "method": "POST", "header": [], "url": { "raw": "{{principal}}/importacoes/presencas", "host": ["{{principal}}"], "path": ["importacoes", "presencas"] } },
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "F - Etapa 4: mensageria (RabbitMQ) - campeonato alterado",
+			"description": "Produtor: o campeonato-service publica CampeonatoAlteradoMessage na fila campeonatos.alterados ao alterar um campeonato. Consumidor: a aplicacao principal atualiza o nome e a data copiados nas conquistas. Precisa do RabbitMQ (solucao inteira no Docker Compose, ou so o broker: docker compose up -d rabbitmq). Painel: {{rabbitmq}} (usuario bjj, senha bjj).",
+			"item": [
+				{
+					"name": "F1 - Conquista 1 antes: copia da Copa Rio",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('200', () => pm.response.to.have.status(200));",
+						"pm.test('copia atual', () => pm.expect(pm.response.json()).to.include({campeonatoId: 1, campeonatoNome: 'Copa Rio de Jiu-Jitsu', campeonatoData: '2026-05-17'}));"
+					] } }],
+					"request": { "method": "GET", "header": [], "url": { "raw": "{{principal}}/conquistas/1", "host": ["{{principal}}"], "path": ["conquistas", "1"] } },
+					"response": []
+				},
+				{
+					"name": "F2 - Altera o campeonato 1 no servico: 200 (publica a mensagem)",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('200', () => pm.response.to.have.status(200));",
+						"pm.test('alterado no servico', () => pm.expect(pm.response.json()).to.include({nome: 'Copa Rio de Jiu-Jitsu 2026', data: '2026-05-18'}));"
+					] } }],
+					"request": { "method": "PUT", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{ \"nome\": \"Copa Rio de Jiu-Jitsu 2026\", \"cidade\": \"Rio de Janeiro\", \"data\": \"2026-05-18\" }", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{campeonato}}/campeonatos/1", "host": ["{{campeonato}}"], "path": ["campeonatos", "1"] } },
+					"response": []
+				},
+				{
+					"name": "F3 - Conquista 1 atualizada pelo consumidor (nome e data novos)",
+					"event": [
+						{ "listen": "prerequest", "script": { "type": "text/javascript", "exec": [
+							"// a mensagem e processada de forma assincrona: espera um instante antes de consultar",
+							"setTimeout(() => {}, 1500);"
+						] } },
+						{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+							"pm.test('200', () => pm.response.to.have.status(200));",
+							"pm.test('copia atualizada pela mensagem', () => pm.expect(pm.response.json()).to.include({campeonatoNome: 'Copa Rio de Jiu-Jitsu 2026', campeonatoData: '2026-05-18'}));"
+						] } }
+					],
+					"request": { "method": "GET", "header": [], "url": { "raw": "{{principal}}/conquistas/1", "host": ["{{principal}}"], "path": ["conquistas", "1"] } },
+					"response": []
+				},
+				{
+					"name": "F4 - PARE a aplicacao principal e altere de novo: 200 (o servico nao depende do consumidor)",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('200 com o consumidor fora do ar', () => pm.response.to.have.status(200));",
+						"pm.test('alterado no servico', () => pm.expect(pm.response.json()).to.include({nome: 'Copa Rio de Jiu-Jitsu', data: '2026-05-17'}));"
+					] } }],
+					"request": { "method": "PUT", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{ \"nome\": \"Copa Rio de Jiu-Jitsu\", \"cidade\": \"Rio de Janeiro\", \"data\": \"2026-05-17\" }", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{campeonato}}/campeonatos/1", "host": ["{{campeonato}}"], "path": ["campeonatos", "1"] } },
+					"response": []
+				},
+				{
+					"name": "F5 - Fila no RabbitMQ: 1 mensagem esperando, 0 consumidores",
+					"event": [
+						{ "listen": "prerequest", "script": { "type": "text/javascript", "exec": [
+							"// o painel do RabbitMQ atualiza as estatisticas a cada 5 segundos",
+							"setTimeout(() => {}, 6000);"
+						] } },
+						{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+							"pm.test('200', () => pm.response.to.have.status(200));",
+							"pm.test('mensagem guardada na fila duravel', () => pm.expect(pm.response.json()).to.include({durable: true, messages_ready: 1, consumers: 0}));"
+						] } }
+					],
+					"request": { "method": "GET", "header": [], "auth": { "type": "basic", "basic": [{ "key": "username", "value": "bjj", "type": "string" }, { "key": "password", "value": "bjj", "type": "string" }] }, "url": { "raw": "{{rabbitmq}}/api/queues/%2F/campeonatos.alterados", "host": ["{{rabbitmq}}"], "path": ["api", "queues", "%2F", "campeonatos.alterados"] } },
+					"response": []
+				},
+				{
+					"name": "F6 - RELIGUE a principal: a mensagem que esperava na fila e processada",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('200', () => pm.response.to.have.status(200));",
+						"pm.test('copia atualizada ao religar (nada se perdeu)', () => pm.expect(pm.response.json()).to.include({campeonatoNome: 'Copa Rio de Jiu-Jitsu', campeonatoData: '2026-05-17'}));"
+					] } }],
+					"request": { "method": "GET", "header": [], "url": { "raw": "{{principal}}/conquistas/1", "host": ["{{principal}}"], "path": ["conquistas", "1"] } },
 					"response": []
 				}
 			]

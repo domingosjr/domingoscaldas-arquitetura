@@ -1,6 +1,7 @@
 package br.edu.infnet.domingoscaldas_arquitetura.aluno;
 
 import java.util.List;
+import java.util.Optional;
 
 import org.springframework.stereotype.Service;
 
@@ -27,6 +28,11 @@ public class AlunoService {
 
 	public Aluno obterPorId(Long id) {
 		return alunoRepository.findById(id).orElseThrow(() -> new AlunoNaoEncontradoException(id));
+	}
+
+	/** Consulta sem exceção (usada pelo Batch para ignorar linhas de alunos inexistentes). */
+	public Optional<Aluno> buscarPorId(Long id) {
+		return alunoRepository.findById(id);
 	}
 
 	public Aluno alterar(Long id, Aluno aluno) {

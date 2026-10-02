@@ -14,4 +14,6 @@ public interface PresencaRepository extends JpaRepository<Presenca, Long> {
 	long countByAlunoId(Long alunoId);
 
 	long countByAlunoIdAndDataAfter(Long alunoId, LocalDate data);
+
+	boolean existsByAlunoIdAndDataAndTipoTreino(Long alunoId, LocalDate data, String tipoTreino);
 }

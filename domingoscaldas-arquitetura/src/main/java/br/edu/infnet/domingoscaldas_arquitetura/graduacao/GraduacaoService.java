@@ -41,6 +41,11 @@ public class GraduacaoService {
 		return presencaRepository.save(presenca);
 	}
 
+	/** Usado pelo Batch para não importar a mesma presença duas vezes. */
+	public boolean existePresenca(Long alunoId, LocalDate data, String tipoTreino) {
+		return presencaRepository.existsByAlunoIdAndDataAndTipoTreino(alunoId, data, tipoTreino);
+	}
+
 	public List<Presenca> obterPresencas() {
 		return presencaRepository.findAll();
 	}

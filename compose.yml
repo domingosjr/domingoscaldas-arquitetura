@@ -1,4 +1,4 @@
-# BJJ School - Etapa 3: um unico comando sobe a solucao inteira
+# BJJ School - Etapas 3 e 4: um unico comando sobe a solucao inteira
 #   docker compose up --build
 # Antes, gere os JARs (o Dockerfile de cada aplicacao copia target/*.jar):
 #   (cd config-server && ./mvnw -DskipTests package)
@@ -9,6 +9,7 @@
 #   principal -> http://campeonato-service:8083   (URL servida pelo config-server, profile prod)
 #   principal -> jdbc:mysql://principal-db:3306/bjjschool
 #   campeonato-service -> jdbc:mysql://campeonato-db:3306/campeonato
+#   campeonato-service e principal -> rabbitmq:5672   (Etapa 4: fila "campeonatos.alterados")
 # Cada aplicacao tem o SEU banco; nenhuma acessa o banco da outra.
 # Senhas: valores padrao apenas para a demonstracao local; sobrescreva por variaveis ou por um arquivo .env
 # (ver .env.example). Em producao real, nunca deixe senhas em arquivos versionados.
@@ -68,6 +69,24 @@ services:
     networks:
       - bjj-rede
 
+  rabbitmq:                  # Etapa 4: broker de mensagens (produtor: campeonato-service; consumidor: principal)
+    image: rabbitmq:4-management
+    container_name: rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USERNAME:-bjj}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-bjj}
+    ports:
+      - "5672:5672"          # AMQP
+      - "15672:15672"        # painel de gerenciamento: http://localhost:15672 (ver a fila e as mensagens paradas)
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    networks:
+      - bjj-rede
+
   campeonato-service:        # Servico independente (porta 8083 dentro e fora)
     build: ./campeonato-service
     container_name: campeonato-service
@@ -77,12 +96,16 @@ services:
       DB_URL: jdbc:mysql://campeonato-db:3306/campeonato
       DB_USERNAME: ${CAMPEONATO_DB_USERNAME:-campeonato}
       DB_PASSWORD: ${CAMPEONATO_DB_PASSWORD:-campeonato}
+      RABBITMQ_USERNAME: ${RABBITMQ_USERNAME:-bjj}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-bjj}
     ports:
       - "8083:8083"
     depends_on:
       config-server:
         condition: service_healthy
       campeonato-db:
+        condition: service_healthy
+      rabbitmq:
         condition: service_healthy
     networks:
       - bjj-rede
@@ -96,12 +119,16 @@ services:
       DB_URL: jdbc:mysql://principal-db:3306/bjjschool
       DB_USERNAME: ${PRINCIPAL_DB_USERNAME:-bjj}
       DB_PASSWORD: ${PRINCIPAL_DB_PASSWORD:-bjj}
+      RABBITMQ_USERNAME: ${RABBITMQ_USERNAME:-bjj}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-bjj}
     ports:
       - "8080:8080"
     depends_on:
       config-server:
         condition: service_healthy
       principal-db:
+        condition: service_healthy
+      rabbitmq:
         condition: service_healthy
       campeonato-service:
         condition: service_started   # a principal sobe mesmo sem o servico (503 ate ele responder)

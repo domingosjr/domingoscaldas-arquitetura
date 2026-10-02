@@ -28,7 +28,7 @@ import br.edu.infnet.domingoscaldas_arquitetura.campeonato.exception.CampeonatoS
  * OpenFeign de verdade. Só o que depende do serviço responde 503; o resto da
  * aplicação — inclusive a regra de pontos — continua funcionando.
  */
-@SpringBootTest
+@SpringBootTest(properties = "spring.rabbitmq.listener.simple.auto-startup=false")
 @AutoConfigureMockMvc
 class CampeonatoIndisponivelIntegrationTest {
 

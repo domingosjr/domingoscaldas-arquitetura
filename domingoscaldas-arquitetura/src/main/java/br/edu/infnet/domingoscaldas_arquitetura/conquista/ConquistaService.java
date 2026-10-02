@@ -1,5 +1,6 @@
 package br.edu.infnet.domingoscaldas_arquitetura.conquista;
 
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -92,6 +93,18 @@ public class ConquistaService {
 		alunoService.obterPorId(alunoId);
 
 		return conquistaRepository.findByAlunoId(alunoId);
+	}
+
+	/**
+	 * Etapa 4 (consumidor da fila): atualiza o nome e a data do campeonato
+	 * copiados nas conquistas. Devolve quantas conquistas foram atualizadas.
+	 */
+	public int atualizarDadosDoCampeonato(Long campeonatoId, String nome, LocalDate data) {
+		List<Conquista> conquistas = conquistaRepository.findByCampeonatoId(campeonatoId);
+		conquistas.forEach(conquista -> conquista.definirCampeonato(campeonatoId, nome, data));
+		conquistaRepository.saveAll(conquistas);
+
+		return conquistas.size();
 	}
 
 	public List<Conquista> obterPorMedalha(Medalha medalha) {

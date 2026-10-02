@@ -8,6 +8,8 @@ import br.edu.infnet.campeonato_service.campeonato.dto.CampeonatoRequest;
 import br.edu.infnet.campeonato_service.campeonato.dto.CampeonatoResponse;
 import br.edu.infnet.campeonato_service.endereco.Endereco;
 import br.edu.infnet.campeonato_service.endereco.EnderecoService;
+import br.edu.infnet.campeonato_service.mensageria.CampeonatoAlteradoMessage;
+import br.edu.infnet.campeonato_service.mensageria.CampeonatoAlteradoProducer;
 
 /**
  * Regras de negócio dos campeonatos. Quando o CEP é informado, a cidade é
@@ -18,10 +20,13 @@ public class CampeonatoService {
 
 	private final CampeonatoRepository campeonatoRepository;
 	private final EnderecoService enderecoService;
+	private final CampeonatoAlteradoProducer campeonatoAlteradoProducer;
 
-	public CampeonatoService(CampeonatoRepository campeonatoRepository, EnderecoService enderecoService) {
+	public CampeonatoService(CampeonatoRepository campeonatoRepository, EnderecoService enderecoService,
+			CampeonatoAlteradoProducer campeonatoAlteradoProducer) {
 		this.campeonatoRepository = campeonatoRepository;
 		this.enderecoService = enderecoService;
+		this.campeonatoAlteradoProducer = campeonatoAlteradoProducer;
 	}
 
 	public CampeonatoResponse incluir(CampeonatoRequest request) {
@@ -45,7 +50,13 @@ public class CampeonatoService {
 		existente.setCep(request.cep());
 		existente.setData(request.data());
 
-		return converterParaResponse(campeonatoRepository.save(existente));
+		Campeonato alterado = campeonatoRepository.save(existente);
+
+		// Etapa 4: avisa por mensagem quem guarda copia do nome e da data (a aplicacao principal)
+		campeonatoAlteradoProducer.enviar(
+				new CampeonatoAlteradoMessage(alterado.getId(), alterado.getNome(), alterado.getData()));
+
+		return converterParaResponse(alterado);
 	}
 
 	public void excluir(Long id) {

@@ -71,6 +71,16 @@
 			<version>3.1.0</version>
 		</dependency>
 
+		<!-- Etapa 4: processamento em lote (Job, Step, Reader, Processor, Writer) com metadados no banco -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-batch-jdbc</artifactId>
+		</dependency>
+		<!-- Etapa 4: mensageria com RabbitMQ (consumidor dos eventos do campeonato-service) -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-amqp</artifactId>
+		</dependency>
 		<!-- Cliente do config-server (Etapa 3): importa porta e URLs pela propriedade spring.config.import -->
 		<dependency>
 			<groupId>org.springframework.cloud</groupId>
